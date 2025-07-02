@@ -1,0 +1,7 @@
+step,has_nan_or_inf,shape
+step1_basic_metrics,True,"(84, 21)"
+step2_team_averages,True,"(2, 11)"
+step3_individual_metrics_with_adjustment,True,"(84, 21)"
+step4_aggregate_and_apply_reliability,True,"(2, 35)"
+step5_normalize_by_position,True,"(2, 50)"
+step6_apply_weights,True,"(2, 56)"

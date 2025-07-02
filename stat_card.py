@@ -238,6 +238,7 @@ def step5_normalize_by_position(df: pd.DataFrame) -> pd.DataFrame:
             if max_val > min_val:
                 result_df.loc[pos_mask, f'{metric}_normalized'] = 50 + (pos_data[metric] - min_val) / (max_val - min_val) * 50
             else:
+                # If all values are the same (including all zero), set to 75.0
                 result_df.loc[pos_mask, f'{metric}_normalized'] = 75.0
         # Negative metrics (lower is better)
         for metric in negative_metrics:

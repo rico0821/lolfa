@@ -16,16 +16,31 @@ def get_options(col):
 
 # Tabs: Main (table) and Admin Card Preview
 TABS = ["Card Table", "Admin Card Preview"]
-tab = st.sidebar.radio("Select Page", TABS)
+if "tab" not in st.session_state:
+    st.session_state.tab = TABS[0]
+tab = st.sidebar.radio("Select Page", TABS, index=TABS.index(st.session_state.tab))
+
+# Helper to get stat min/max for sliders
+def get_stat_range(stat):
+    q = f"SELECT MIN({stat}), MAX({stat}) FROM cards"
+    mn, mx = conn.execute(q).fetchone()
+    return int(mn or 0), int(mx or 100)
 
 if tab == "Card Table":
+    st.session_state.tab = "Card Table"
     # Sidebar filters
     player_search = st.sidebar.text_input("Search player name (partial)", "")
-    team = st.sidebar.selectbox("Team", ["All"] + get_options("teamname"))
-    league = st.sidebar.selectbox("League", ["All"] + get_options("league"))
-    year = st.sidebar.selectbox("Year", ["All"] + [str(y) for y in get_options("year")])
-    split = st.sidebar.selectbox("Split", ["All"] + get_options("split"))
-    card_class = st.sidebar.selectbox("Class", ["All"] + get_options("class"))
+    team = st.sidebar.multiselect("Team", get_options("teamname"), default=None)
+    league = st.sidebar.multiselect("League", get_options("league"), default=None)
+    year = st.sidebar.multiselect("Year", [str(y) for y in get_options("year")], default=None)
+    split = st.sidebar.multiselect("Split", get_options("split"), default=None)
+    card_class = st.sidebar.multiselect("Class", get_options("class"), default=None)
+    position = st.sidebar.multiselect("Position", get_options("position"), default=None)
+    # Stat range sliders
+    stat_filters = {}
+    for stat in ['final_offense', 'final_defense', 'final_utility', 'final_macro', 'final_clutch', 'final_consistency']:
+        mn, mx = get_stat_range(stat)
+        stat_filters[stat] = st.sidebar.slider(f"{stat.replace('final_','').capitalize()} range", mn, mx, (mn, mx))
 
     # Build query dynamically
     query = "SELECT * FROM cards WHERE 1=1"
@@ -33,21 +48,27 @@ if tab == "Card Table":
     if player_search:
         query += " AND playername LIKE ?"
         params.append(f"%{player_search}%")
-    if team != "All":
-        query += " AND teamname = ?"
-        params.append(team)
-    if league != "All":
-        query += " AND league = ?"
-        params.append(league)
-    if year != "All":
-        query += " AND year = ?"
-        params.append(int(year))
-    if split != "All":
-        query += " AND split = ?"
-        params.append(split)
-    if card_class != "All":
-        query += " AND class = ?"
-        params.append(card_class)
+    if team:
+        query += f" AND teamname IN ({','.join(['?']*len(team))})"
+        params.extend(team)
+    if league:
+        query += f" AND league IN ({','.join(['?']*len(league))})"
+        params.extend(league)
+    if year:
+        query += f" AND year IN ({','.join(['?']*len(year))})"
+        params.extend([int(y) for y in year])
+    if split:
+        query += f" AND split IN ({','.join(['?']*len(split))})"
+        params.extend(split)
+    if card_class:
+        query += f" AND class IN ({','.join(['?']*len(card_class))})"
+        params.extend(card_class)
+    if position:
+        query += f" AND position IN ({','.join(['?']*len(position))})"
+        params.extend(position)
+    for stat, (mn, mx) in stat_filters.items():
+        query += f" AND {stat} BETWEEN ? AND ?"
+        params.extend([mn, mx])
     query += " ORDER BY league, year, split, teamname, playername"
 
     cards_df = pd.read_sql_query(query, conn, params=params)
@@ -57,40 +78,75 @@ if tab == "Card Table":
     else:
         # Show only relevant columns, round stats
         display_cols = [
-            'playername', 'teamname', 'league', 'season', 'year', 'split', 'class',
+            'id', 'playername', 'teamname', 'position', 'league', 'season', 'year', 'split', 'class',
             'final_offense', 'final_defense', 'final_utility', 'final_macro', 'final_clutch', 'final_consistency'
         ]
         for stat in ['final_offense', 'final_defense', 'final_utility', 'final_macro', 'final_clutch', 'final_consistency']:
             if stat in cards_df:
                 cards_df[stat] = cards_df[stat].round(0).astype(int)
-        st.dataframe(cards_df[display_cols], use_container_width=True)
+        # Sorting
+        sort_col = st.selectbox("Sort by", display_cols, index=1)
+        sort_asc = st.checkbox("Ascending", value=True)
+        cards_df = cards_df.sort_values(by=sort_col, ascending=sort_asc)
+        # Pagination
+        page_size = st.selectbox("Rows per page", [10, 25, 50, 100], index=1)
+        page_num = st.number_input("Page", min_value=1, max_value=max(1, (len(cards_df)-1)//page_size+1), value=1)
+        start = (page_num-1)*page_size
+        end = start+page_size
+        paged_df = cards_df.iloc[start:end]
+        # Clickable rows (use id as unique key)
+        st.write("Click a row to preview the card:")
+        id_to_label = lambda row: f"{row['playername']} ({row['teamname']}, {row['season']})"
+        selected_id = st.radio(
+            "Select a card to preview",
+            paged_df['id'],
+            format_func=lambda i: id_to_label(paged_df[paged_df['id'] == i].iloc[0]),
+            key="card_table_radio"
+        )
+        st.dataframe(paged_df[display_cols], use_container_width=True)
+        if st.button("Preview selected card"):
+            st.session_state.selected_card_id = selected_id
+            st.session_state.tab = "Admin Card Preview"
+            st.session_state.just_navigated = True
+            st.experimental_rerun()
 
 elif tab == "Admin Card Preview":
+    st.session_state.tab = "Admin Card Preview"
     st.header("Admin Card Preview")
-    # Card selection
     all_cards = pd.read_sql_query("SELECT * FROM cards ORDER BY league, year, split, teamname, playername", conn)
-    card_idx = st.sidebar.selectbox("Select card", all_cards.index, format_func=lambda i: f"{all_cards.loc[i, 'playername']} ({all_cards.loc[i, 'teamname']}, {all_cards.loc[i, 'season']})")
-    card = all_cards.loc[card_idx]
+    id_to_label = lambda row: f"{row['playername']} ({row['teamname']}, {row['season']})"
+    # Navigation logic
+    if "selected_card_id" in st.session_state and st.session_state.selected_card_id in all_cards['id'].values:
+        default_id = st.session_state.selected_card_id
+    else:
+        default_id = all_cards['id'].iloc[0]
+    # Only set index if just navigated
+    if st.session_state.get("just_navigated", False):
+        selectbox_index = all_cards['id'].tolist().index(default_id) if default_id in all_cards['id'].tolist() else 0
+        st.session_state.just_navigated = False
+    else:
+        selectbox_index = None
+    card_id = st.sidebar.selectbox(
+        "Select card",
+        all_cards['id'],
+        format_func=lambda i: id_to_label(all_cards[all_cards['id'] == i].iloc[0]),
+        index=selectbox_index if selectbox_index is not None else 0,
+        key="admin_card_selectbox"
+    )
+    st.session_state.selected_card_id = card_id
+    card = all_cards[all_cards['id'] == card_id].iloc[0]
 
     # Background selection
     bg_dir = "static/backgrounds"
     bg_files = [f for f in os.listdir(bg_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))]
     bg_file = st.sidebar.selectbox("Select background", bg_files)
-
-    # Background path for HTML (must be /app/static/...)
     bg_path = f"/app/static/backgrounds/{bg_file}"
-
-    # Use local static images for placeholders (served via /app/static/ path)
     player_img = "/app/static/player_images/placeholder_profile.jpg"
     team_img_svg = "/app/static/team_logos/t1_esports_logo.svg"
-    team_img_png = "/app/static/team_logos/t1_esports_logo.png"  # fallback if you add a PNG version
+    team_img_png = "/app/static/team_logos/t1_esports_logo.png"
     class_img = "/app/static/class_icons/placeholder_class.webp"
-
-    # Card rendering (HTML/CSS) with improved fitting, alt attributes, and spacing
     overall = int(round((card['final_offense'] + card['final_defense'] + card['final_utility'] + card['final_macro'] + card['final_clutch'] + card['final_consistency']) / 6))
-    # Capitalize all letters of the position for display
     position_label = card['position'].upper() if isinstance(card['position'], str) else card['position']
-    # Stat label abbreviations
     stat_labels = [
         ("ATT", int(round(card['final_offense']))),
         ("DEF", int(round(card['final_defense']))),
@@ -99,7 +155,6 @@ elif tab == "Admin Card Preview":
         ("CLT", int(round(card['final_clutch']))),
         ("STB", int(round(card['final_consistency'])))
     ]
-    # Prepare two-column stats layout
     stat_pairs = list(zip(stat_labels[:3], stat_labels[3:]))
     card_html = f'''
     <div style="position:relative;width:340px;height:540px;background:url('{bg_path}');background-size:cover;background-position:center;border-radius:32px;margin:auto;overflow:hidden;">

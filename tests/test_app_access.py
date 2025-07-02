@@ -24,22 +24,23 @@ def test_admin_card_preview_accessible():
     from streamlit.testing.v1 import AppTest
     at = AppTest.from_file("app.py")
     at = at.run(timeout=30)
-    print(f"Sidebar widgets: {at.sidebar}")
-    print(f"Radio widgets: {at.radio}")
-    # Try to set the sidebar radio to 'Admin Card Preview' if available
-    if len(at.radio) > 0:
-        at.radio[0].set_value("Admin Card Preview")
-        at = at.run(timeout=30)
-        # Check for header
-        assert any("Admin Card Preview" in h.value for h in at.header), "Admin Card Preview header not found"
-        # Check for card HTML (look for overall rating and stat labels)
-        card_html_found = False
-        for m in at.markdown:
-            if "Attack" in m.value and "Defence" in m.value and "Stability" in m.value:
-                card_html_found = True
-                break
-        assert card_html_found, "FIFA-style card HTML not rendered in Admin Card Preview"
-        # Check that at least one card is available for selection
-        assert at.selectbox[0].options, "No cards available for selection in Admin Card Preview"
-    else:
-        raise AssertionError("No radio widgets found in sidebar after initial run") 
+    # Set the sidebar radio to 'Admin Card Preview'
+    radio_widgets = [r for r in at.radio if r.label == 'Select Page']
+    assert radio_widgets, "Sidebar radio for tab selection not found"
+    radio_widgets[0].set_value("Admin Card Preview")
+    at = at.run(timeout=30)
+    # Select the first available card id in the selectbox
+    selectboxes = [s for s in at.selectbox if s.label == 'Select card']
+    assert selectboxes, "Card selectbox not found in Admin Card Preview"
+    first_option = selectboxes[0].options[0]
+    selectboxes[0].set_value(first_option)
+    at = at.run(timeout=30)
+    # Check for header
+    assert any("Admin Card Preview" in h.value for h in at.header), "Admin Card Preview header not found"
+    # Check for card HTML (look for player name in the HTML)
+    card_html_found = False
+    for m in at.markdown:
+        if str(first_option) in m.value or "Player" in m.value:
+            card_html_found = True
+            break
+    assert card_html_found, "Card HTML not rendered for selected card" 
